@@ -24,6 +24,38 @@ import WebGL.Settings.DepthTest as DepthTest
 import WebGL.Settings.StencilTest as StencilTest
 
 
+
+-- MAIN
+
+
+main : Program () Model Msg
+main =
+    Browser.element
+        { init =
+            \_ ->
+                ( { width = 0
+                  , height = 0
+                  , elapsedTime = 0
+                  , activeDrag = Nothing
+                  , azimuth = degrees -90
+                  , elevation = degrees 30
+                  }
+                , Task.perform
+                    (\{ viewport } ->
+                        Resize viewport.width viewport.height
+                    )
+                    getViewport
+                )
+        , subscriptions = subscriptions
+        , update = update
+        , view = view
+        }
+
+
+
+-- MODEL
+
+
 type alias Model =
     { width : Float
     , height : Float
@@ -224,6 +256,10 @@ boxMeshes dimensions =
     }
 
 
+
+-- UPDATE
+
+
 type Msg
     = Resize Float Float
     | Tick Float
@@ -231,30 +267,6 @@ type Msg
     | MouseMove ( Float, Float )
     | MouseUp
     | VisibilityChange Browser.Events.Visibility
-
-
-main : Program () Model Msg
-main =
-    Browser.element
-        { init =
-            \_ ->
-                ( { width = 0
-                  , height = 0
-                  , elapsedTime = 0
-                  , activeDrag = Nothing
-                  , azimuth = degrees -90
-                  , elevation = degrees 30
-                  }
-                , Task.perform
-                    (\{ viewport } ->
-                        Resize viewport.width viewport.height
-                    )
-                    getViewport
-                )
-        , subscriptions = subscriptions
-        , update = update
-        , view = view
-        }
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -314,6 +326,10 @@ mouseEventDecoder =
     Decode.map2 Tuple.pair
         (Decode.field "clientX" Decode.float)
         (Decode.field "clientY" Decode.float)
+
+
+
+-- SUBSCRIPTION
 
 
 subscriptions : Model -> Sub Msg
