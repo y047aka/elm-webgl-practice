@@ -1,29 +1,20 @@
--- Thwomp looks at your mouse. What is it up to?
---
--- Dependencies:
---   elm install elm/json
---   elm install elm-explorations/linear-algebra
---   elm install elm-explorations/webgl
---
--- Thanks to The PaperNES Guy for the texture:
---   https://the-papernes-guy.deviantart.com/art/Thwomps-Thwomps-Thwomps-186879685
-
-
-module Main exposing (Model, Msg(..), Uniforms, Vertex, decodeMovement, faceMesh, fragmentShader, init, main, options, rotatedSquare, sidesMesh, square, subscriptions, toPerspective, update, vertexShader, view)
+module Main exposing (main)
 
 import Browser
-import Browser.Dom as Dom
-import Browser.Events as E
-import Html exposing (Html)
-import Html.Attributes exposing (height, style, width)
-import Json.Decode as D
-import Math.Matrix4 as Mat4 exposing (Mat4)
-import Math.Vector2 as Vec2 exposing (Vec2, vec2)
-import Math.Vector3 as Vec3 exposing (Vec3, vec3)
+import Browser.Events as E exposing (onAnimationFrameDelta, onKeyDown, onKeyUp, onMouseDown, onMouseMove, onMouseUp)
+import Html exposing (Html, div, h2, input, text)
+import Html.Attributes exposing (checked, height, step, style, type_, value, width)
+import Html.Events exposing (keyCode, onClick, onInput)
+import Json.Decode as Decode exposing (Decoder)
+import Math.Matrix4 as Mat4 exposing (..)
+import Math.Vector2 as Vec2 exposing (Vec2)
+import Math.Vector3 as Vec3 exposing (Vec3, add, k, setX, setY, setZ, vec3)
+import Random
 import Result
-import Task
-import WebGL
-import WebGL.Texture as Texture
+import Task exposing (Task)
+import WebGL exposing (Entity, Mesh, Shader)
+import WebGL.Settings.Blend as Blend
+import WebGL.Texture as Texture exposing (Error, Texture, defaultOptions)
 
 
 
@@ -35,7 +26,7 @@ main =
     Browser.element
         { init = init
         , view = view
-        , update = \msg model -> ( update msg model, Cmd.none )
+        , update = update
         , subscriptions = subscriptions
         }
 
@@ -45,40 +36,52 @@ main =
 
 
 type alias Model =
-    { width : Float
-    , height : Float
-    , x : Float
-    , y : Float
-    , side : Maybe Texture.Texture
-    , face : Maybe Texture.Texture
+    { texture : Maybe Texture
+    , position : Vec3
+    , lighting : Bool
+    , thetaX : Float
+    , thetaY : Float
+    , mouseStatus : MouseStatus
+    , directionalColourText : { x : String, y : String, z : String }
+    , directionalColour : Vec3
+    , ambientColourText : { x : String, y : String, z : String }
+    , ambientColour : Vec3
+    , directionalText : { x : String, y : String, z : String }
+    , directional : Vec3
+    }
+
+
+type alias MouseStatus =
+    { pressed : Bool
+    , x : Int
+    , y : Int
+    }
+
+
+type alias Triplet =
+    { x : String
+    , y : String
+    , z : String
     }
 
 
 init : () -> ( Model, Cmd Msg )
 init _ =
-    ( { width = 0
-      , height = 0
-      , x = 0
-      , y = 0
-      , face = Nothing
-      , side = Nothing
+    ( { texture = Nothing
+      , thetaX = 0
+      , thetaY = 0
+      , position = vec3 0 0 -4
+      , lighting = True
+      , mouseStatus = MouseStatus False 0 0
+      , directionalColourText = { x = "1", y = "1", z = "1" }
+      , directionalColour = vec3 1 1 1
+      , ambientColourText = { x = "0.2", y = "0.2", z = "0.2" }
+      , ambientColour = vec3 0.2 0.2 0.2
+      , directionalText = { x = "1", y = "1", z = "1" }
+      , directional = vec3 1 1 1
       }
-    , Cmd.batch
-        [ Task.perform GotViewport Dom.getViewport
-        , Task.attempt GotFace (Texture.loadWith options "https://elm-lang.org/assets/thwomp-face.jpg")
-        , Task.attempt GotSide (Texture.loadWith options "https://elm-lang.org/assets/thwomp-side.jpg")
-        ]
+    , Task.attempt TextureLoaded (Texture.load "https://totsuka-works.github.io/moon/texture/level3.jpg")
     )
-
-
-options : Texture.Options
-options =
-    { magnify = Texture.nearest
-    , minify = Texture.nearest
-    , horizontalWrap = Texture.repeat
-    , verticalWrap = Texture.repeat
-    , flipY = True
-    }
 
 
 
@@ -86,43 +89,138 @@ options =
 
 
 type Msg
-    = GotFace (Result Texture.Error Texture.Texture)
-    | GotSide (Result Texture.Error Texture.Texture)
-    | GotViewport Dom.Viewport
-    | Resized Int Int
-    | MouseMoved Float Float
+    = TextureLoaded (Result Error Texture)
+    | MouseDown { x : Int, y : Int }
+    | MouseMove { x : Int, y : Int }
+    | MouseUp { x : Int, y : Int }
+    | UseLighting
+    | ChangeDirectionalColourR String
+    | ChangeDirectionalColourG String
+    | ChangeDirectionalColourB String
+    | ChangeAmbientColourR String
+    | ChangeAmbientColourG String
+    | ChangeAmbientColourB String
+    | ChangeDirectionalX String
+    | ChangeDirectionalY String
+    | ChangeDirectionalZ String
 
 
-update : Msg -> Model -> Model
+update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        GotFace result ->
-            { model
-                | face = Result.toMaybe result
-            }
+        TextureLoaded texture ->
+            ( { model | texture = Result.toMaybe texture }, Cmd.none )
 
-        GotSide result ->
-            { model
-                | side = Result.toMaybe result
-            }
+        MouseDown pos ->
+            ( mouseDown pos model, Cmd.none )
 
-        GotViewport { viewport } ->
-            { model
-                | width = viewport.width
-                , height = viewport.height
-            }
+        MouseMove pos ->
+            ( mouseMove pos model, Cmd.none )
 
-        Resized width height ->
-            { model
-                | width = toFloat width
-                , height = toFloat height
-            }
+        MouseUp pos ->
+            ( mouseUp pos model, Cmd.none )
 
-        MouseMoved x y ->
-            { model
-                | x = x
-                , y = y
-            }
+        UseLighting ->
+            ( { model | lighting = not model.lighting }, Cmd.none )
+
+        ChangeDirectionalX value ->
+            let
+                ( numeric, textual ) =
+                    updateAndParseX model.directional model.directionalText value
+            in
+            ( { model | directional = numeric, directionalText = textual }, Cmd.none )
+
+        ChangeDirectionalY value ->
+            let
+                ( numeric, textual ) =
+                    updateAndParseY model.directional model.directionalText value
+            in
+            ( { model | directional = numeric, directionalText = textual }, Cmd.none )
+
+        ChangeDirectionalZ value ->
+            let
+                ( numeric, textual ) =
+                    updateAndParseZ model.directional model.directionalText value
+            in
+            ( { model | directional = numeric, directionalText = textual }, Cmd.none )
+
+        ChangeDirectionalColourR value ->
+            let
+                ( numeric, textual ) =
+                    updateAndParseX model.directionalColour model.directionalColourText value
+            in
+            ( { model | directionalColour = numeric, directionalColourText = textual }, Cmd.none )
+
+        ChangeDirectionalColourG value ->
+            let
+                ( numeric, textual ) =
+                    updateAndParseY model.directionalColour model.directionalColourText value
+            in
+            ( { model | directionalColour = numeric, directionalColourText = textual }, Cmd.none )
+
+        ChangeDirectionalColourB value ->
+            let
+                ( numeric, textual ) =
+                    updateAndParseZ model.directionalColour model.directionalColourText value
+            in
+            ( { model | directionalColour = numeric, directionalColourText = textual }, Cmd.none )
+
+        ChangeAmbientColourR value ->
+            let
+                ( numeric, textual ) =
+                    updateAndParseX model.ambientColour model.ambientColourText value
+            in
+            ( { model | ambientColour = numeric, ambientColourText = textual }, Cmd.none )
+
+        ChangeAmbientColourG value ->
+            let
+                ( numeric, textual ) =
+                    updateAndParseY model.ambientColour model.ambientColourText value
+            in
+            ( { model | ambientColour = numeric, ambientColourText = textual }, Cmd.none )
+
+        ChangeAmbientColourB value ->
+            let
+                ( numeric, textual ) =
+                    updateAndParseZ model.ambientColour model.ambientColourText value
+            in
+            ( { model | ambientColour = numeric, ambientColourText = textual }, Cmd.none )
+
+
+updateAndParseX : Vec3 -> Triplet -> String -> ( Vec3, Triplet )
+updateAndParseX default textual value =
+    let
+        text =
+            { textual | x = value }
+    in
+    ( parse default text, text )
+
+
+updateAndParseY : Vec3 -> Triplet -> String -> ( Vec3, Triplet )
+updateAndParseY default textual value =
+    let
+        text =
+            { textual | y = value }
+    in
+    ( parse default text, text )
+
+
+updateAndParseZ : Vec3 -> Triplet -> String -> ( Vec3, Triplet )
+updateAndParseZ default textual value =
+    let
+        text =
+            { textual | z = value }
+    in
+    ( parse default text, text )
+
+
+parse : Vec3 -> Triplet -> Vec3
+parse default text =
+    Maybe.map3 vec3
+        (String.toFloat text.x)
+        (String.toFloat text.y)
+        (String.toFloat text.z)
+        |> Maybe.withDefault default
 
 
 
@@ -132,16 +230,41 @@ update msg model =
 subscriptions : Model -> Sub Msg
 subscriptions _ =
     Sub.batch
-        [ E.onResize Resized
-        , E.onMouseMove decodeMovement
+        [ onMouseDown (mousePosition MouseDown)
+        , onMouseUp (mousePosition MouseUp)
+        , onMouseMove (mousePosition MouseMove)
         ]
 
 
-decodeMovement : D.Decoder Msg
-decodeMovement =
-    D.map2 MouseMoved
-        (D.field "pageX" D.float)
-        (D.field "pageY" D.float)
+mouseDown : { x : Int, y : Int } -> Model -> Model
+mouseDown { x, y } m =
+    { m | mouseStatus = { x = x, y = y, pressed = True } }
+
+
+mouseMove : { x : Int, y : Int } -> Model -> Model
+mouseMove { x, y } m =
+    case m.mouseStatus.pressed of
+        False ->
+            m
+
+        True ->
+            { m
+                | mouseStatus = { x = x, y = y, pressed = True }
+                , thetaX = m.thetaX + degrees (Basics.toFloat (x - m.mouseStatus.x))
+                , thetaY = m.thetaY + degrees (Basics.toFloat (y - m.mouseStatus.y))
+            }
+
+
+mouseUp : { x : Int, y : Int } -> Model -> Model
+mouseUp { x, y } m =
+    { m | mouseStatus = { pressed = False, x = 0, y = 0 } }
+
+
+mousePosition : ({ x : Int, y : Int } -> Msg) -> Decoder Msg
+mousePosition msg =
+    Decode.map2 (\x y -> msg { x = x, y = y })
+        (Decode.field "pageX" Decode.int)
+        (Decode.field "pageY" Decode.int)
 
 
 
@@ -149,110 +272,158 @@ decodeMovement =
 
 
 view : Model -> Html Msg
-view model =
-    case Maybe.map2 Tuple.pair model.face model.side of
-        Nothing ->
-            Html.text "Loading textures..."
-
-        Just ( face, side ) ->
-            let
-                perspective =
-                    toPerspective model.x model.y model.width model.height
-            in
-            WebGL.toHtml
-                [ style "display" "block"
-                , style "position" "absolute"
-                , style "left" "0"
-                , style "top" "0"
-                , width (round model.width)
-                , height (round model.height)
-                ]
-                [ WebGL.entity vertexShader
-                    fragmentShader
-                    faceMesh
-                    { perspective = perspective
-                    , texture = face
-                    }
-                , WebGL.entity vertexShader
-                    fragmentShader
-                    sidesMesh
-                    { perspective = perspective
-                    , texture = side
-                    }
-                ]
-
-
-toPerspective : Float -> Float -> Float -> Float -> Mat4
-toPerspective x y width height =
+view { texture, thetaX, thetaY, position, lighting, directionalColour, directional, ambientColour, directionalColourText, ambientColourText, directionalText } =
     let
-        eye =
-            Vec3.scale 6 <|
-                Vec3.normalize <|
-                    vec3 (0.5 - x / width) (y / height - 0.5) 1
+        entities =
+            renderEntity sphere thetaX thetaY texture position lighting directionalColour directional ambientColour
     in
-    Mat4.mul
-        (Mat4.makePerspective 45 (width / height) 0.01 100)
-        (Mat4.makeLookAt eye (vec3 0 0 0) Vec3.j)
+    div
+        []
+        [ WebGL.toHtml
+            [ width 2000, height 2000, style "background" "black" ]
+            entities
+        , div
+            [ style "left" "20px"
+            , style "right" "20px"
+            , style "top" "500px"
+            ]
+            [ div []
+                [ input [ type_ "checkbox", onClick UseLighting, checked lighting ] []
+                , text " Use lighting"
+                ]
+            , div []
+                [ h2 [] [ text "Directional Light" ]
+                , div []
+                    [ text "Direction: "
+                    , text " x: "
+                    , input [ type_ "text", step "0.01", onInput ChangeDirectionalX, value directionalText.x ] []
+                    , text " y: "
+                    , input [ type_ "text", step "0.01", onInput ChangeDirectionalY, value directionalText.y ] []
+                    , text " z: "
+                    , input [ type_ "text", step "0.01", onInput ChangeDirectionalZ, value directionalText.z ] []
+                    ]
+                , div []
+                    [ text "Colour: "
+                    , text " R: "
+                    , input [ type_ "text", step "0.01", onInput ChangeDirectionalColourR, value directionalColourText.x ] []
+                    , text " G: "
+                    , input [ type_ "text", step "0.01", onInput ChangeDirectionalColourG, value directionalColourText.y ] []
+                    , text " B: "
+                    , input [ type_ "text", step "0.01", onInput ChangeDirectionalColourB, value directionalColourText.z ] []
+                    ]
+                , h2 [] [ text "Ambient Light" ]
+                , div []
+                    [ text "Colour: "
+                    , text " R: "
+                    , input [ type_ "text", step "0.01", onInput ChangeAmbientColourR, value ambientColourText.x ] []
+                    , text " G: "
+                    , input [ type_ "text", step "0.01", onInput ChangeAmbientColourG, value ambientColourText.y ] []
+                    , text " B: "
+                    , input [ type_ "text", step "0.01", onInput ChangeAmbientColourB, value ambientColourText.z ] []
+                    ]
+                ]
+            , text message
+            ]
+        ]
+
+
+message : String
+message =
+    "Move the Moon dragging the mouse"
+
+
+renderEntity : Mesh { position : Vec3, coord : Vec3, norm : Vec3 } -> Float -> Float -> Maybe Texture -> Vec3 -> Bool -> Vec3 -> Vec3 -> Vec3 -> List Entity
+renderEntity mesh thetaX thetaY texture position lighting directionalColour directional ambientColour =
+    case texture of
+        Nothing ->
+            []
+
+        Just tex ->
+            [ WebGL.entity vertexShader fragmentShader mesh (uniformsShpere thetaX thetaY tex position lighting directionalColour directional ambientColour) ]
+
+
+uniformsShpere : Float -> Float -> Texture -> Vec3 -> Bool -> Vec3 -> Vec3 -> Vec3 -> { texture : Texture, worldSpace : Mat4, perspective : Mat4, camera : Mat4, normalMatrix : Mat4, lighting : Bool, directionalColour : Vec3, ambientColour : Vec3, directional : Vec3 }
+uniformsShpere tx ty texture displacement lighting directionalColour directional ambientColour =
+    let
+        worldSpace =
+            rotate tx (vec3 0 1 0) (rotate ty (vec3 1 0 0) (makeTranslate displacement))
+
+        camera =
+            makeLookAt (vec3 0 0 0) (vec3 0 0 -4) (vec3 0 1 0)
+
+        perspective =
+            makePerspective 45 1 0.1 100
+    in
+    { texture = texture
+    , worldSpace = worldSpace
+    , perspective = perspective
+    , camera = camera
+    , normalMatrix = transpose (inverseOrthonormal (mul worldSpace camera))
+    , lighting = lighting
+    , directionalColour = directionalColour
+    , ambientColour = ambientColour
+    , directional = directional
+    }
 
 
 
 -- MESHES
 
 
-type alias Vertex =
-    { position : Vec3
-    , coord : Vec2
-    }
+numSegments : Float
+numSegments =
+    30
 
 
-faceMesh : WebGL.Mesh Vertex
-faceMesh =
-    WebGL.triangles square
-
-
-sidesMesh : WebGL.Mesh Vertex
-sidesMesh =
-    WebGL.triangles <|
-        List.concatMap rotatedSquare <|
-            [ ( 90, 0 )
-            , ( 180, 0 )
-            , ( 270, 0 )
-            , ( 0, 90 )
-            , ( 0, 270 )
-            ]
-
-
-rotatedSquare : ( Float, Float ) -> List ( Vertex, Vertex, Vertex )
-rotatedSquare ( angleXZ, angleYZ ) =
+sphere : Mesh { position : Vec3, coord : Vec3, norm : Vec3 }
+sphere =
     let
-        transformMat =
-            Mat4.mul
-                (Mat4.makeRotate (degrees angleXZ) Vec3.j)
-                (Mat4.makeRotate (degrees angleYZ) Vec3.i)
-
-        transform vertex =
-            { vertex | position = Mat4.transform transformMat vertex.position }
-
-        transformTriangle ( a, b, c ) =
-            ( transform a, transform b, transform c )
+        latitudes =
+            List.map
+                (\idx -> ( Basics.toFloat idx / numSegments, (Basics.toFloat idx + 1) / numSegments ))
+                (List.range (-(round numSegments) // 2) ((round numSegments // 2) - 1))
     in
-    List.map transformTriangle square
+    WebGL.triangles <|
+        List.concatMap (\( lat1, lat2 ) -> ring lat1 lat2 numSegments 1) latitudes
 
 
-square : List ( Vertex, Vertex, Vertex )
-square =
+ring : Float -> Float -> Float -> Float -> List ( { position : Vec3, coord : Vec3, norm : Vec3 }, { position : Vec3, coord : Vec3, norm : Vec3 }, { position : Vec3, coord : Vec3, norm : Vec3 } )
+ring latitude1 latitude2 segments radius =
     let
+        longitudes =
+            List.map
+                (\idx -> ( Basics.toFloat idx / segments, (Basics.toFloat idx + 1) / segments ))
+                (List.range 0 (round segments - 1))
+    in
+    List.concatMap (\( longitude1, longitude2 ) -> face latitude1 latitude2 longitude1 longitude2 radius) longitudes
+
+
+face : Float -> Float -> Float -> Float -> Float -> List ( { position : Vec3, coord : Vec3, norm : Vec3 }, { position : Vec3, coord : Vec3, norm : Vec3 }, { position : Vec3, coord : Vec3, norm : Vec3 } )
+face latitude1 latitude2 longitude1 longitude2 radius =
+    let
+        theta1 =
+            degrees (180 * latitude1)
+
+        theta2 =
+            degrees (180 * latitude2)
+
+        phi1 =
+            degrees (360 * longitude1)
+
+        phi2 =
+            degrees (360 * longitude2)
+
         topLeft =
-            Vertex (vec3 -1 1 1) (vec2 0 1)
+            { position = vec3 (cos theta2 * sin phi1 * radius) (sin theta2 * radius) (cos theta2 * cos phi1 * radius), coord = vec3 (longitude1 - 0.5) (latitude2 - 0.5) 0, norm = vec3 (cos theta2 * sin phi1) (sin theta2) (cos theta2 * cos phi1) }
 
         topRight =
-            Vertex (vec3 1 1 1) (vec2 1 1)
+            { position = vec3 (cos theta2 * sin phi2 * radius) (sin theta2 * radius) (cos theta2 * cos phi2 * radius), coord = vec3 (longitude2 - 0.5) (latitude2 - 0.5) 0, norm = vec3 (cos theta2 * sin phi2) (sin theta2) (cos theta2 * cos phi2) }
 
         bottomLeft =
-            Vertex (vec3 -1 -1 1) (vec2 0 0)
+            { position = vec3 (cos theta1 * sin phi1 * radius) (sin theta1 * radius) (cos theta1 * cos phi1 * radius), coord = vec3 (longitude1 - 0.5) (latitude1 - 0.5) 0, norm = vec3 (cos theta1 * sin phi1) (sin theta1) (cos theta1 * cos phi1) }
 
         bottomRight =
-            Vertex (vec3 1 -1 1) (vec2 1 0)
+            { position = vec3 (cos theta1 * sin phi2 * radius) (sin theta1 * radius) (cos theta1 * cos phi2 * radius), coord = vec3 (longitude2 - 0.5) (latitude1 - 0.5) 0, norm = vec3 (cos theta1 * sin phi2) (sin theta1) (cos theta1 * cos phi2) }
     in
     [ ( topLeft, topRight, bottomLeft )
     , ( bottomLeft, topRight, bottomRight )
@@ -263,35 +434,46 @@ square =
 -- SHADERS
 
 
-type alias Uniforms =
-    { perspective : Mat4
-    , texture : Texture.Texture
-    }
-
-
-vertexShader : WebGL.Shader Vertex Uniforms { vcoord : Vec2 }
+vertexShader : Shader { attr | position : Vec3, coord : Vec3, norm : Vec3 } { unif | worldSpace : Mat4, perspective : Mat4, camera : Mat4, normalMatrix : Mat4, lighting : Bool, directionalColour : Vec3, ambientColour : Vec3, directional : Vec3 } { vcoord : Vec2, lightWeighting : Vec3 }
 vertexShader =
     [glsl|
-    attribute vec3 position;
-    attribute vec2 coord;
-    uniform mat4 perspective;
-    varying vec2 vcoord;
-
-    void main () {
-      gl_Position = perspective * vec4(position, 1.0);
-      vcoord = coord.xy;
+  precision mediump float;
+  attribute vec3 position;
+  attribute vec3 coord;
+  attribute vec3 norm;
+  uniform mat4 worldSpace;
+  uniform mat4 perspective;
+  uniform mat4 normalMatrix;
+  uniform mat4 camera;
+  uniform bool lighting;
+  uniform vec3 directionalColour;
+  uniform vec3 directional;
+  uniform vec3 ambientColour;
+  varying vec2 vcoord;
+  varying vec3 lightWeighting;
+  void main() {
+    gl_Position = perspective * camera * worldSpace * vec4(position, 1.0);
+    vcoord = coord.xy;
+    if (!lighting) {
+      lightWeighting = vec3(1.0, 1.0, 1.0);
+    } else {
+      vec4 transformedNormal = normalMatrix * vec4(norm, 0.0);
+      float directionalLightWeighting = max(dot(transformedNormal, vec4(directional, 0)), 0.0);
+      lightWeighting = ambientColour + directionalColour * directionalLightWeighting;
     }
-  |]
+  }
+|]
 
 
-fragmentShader : WebGL.Shader {} Uniforms { vcoord : Vec2 }
+fragmentShader : Shader {} { unif | texture : Texture } { vcoord : Vec2, lightWeighting : Vec3 }
 fragmentShader =
     [glsl|
-    precision mediump float;
-    uniform sampler2D texture;
-    varying vec2 vcoord;
-
-    void main () {
-      gl_FragColor = texture2D(texture, vcoord);
-    }
-  |]
+  precision mediump float;
+  uniform sampler2D texture;
+  varying vec2 vcoord;
+  varying vec3 lightWeighting;
+  void main () {
+      vec4 textureColor = texture2D(texture, vec2(vcoord.s, vcoord.t));
+      gl_FragColor = vec4(textureColor.rgb * lightWeighting, textureColor.a);
+  }
+|]
