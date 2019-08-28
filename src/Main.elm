@@ -280,7 +280,7 @@ view { texture, thetaX, thetaY, position, lighting, directionalColour, direction
     div
         []
         [ WebGL.toHtml
-            [ width 2000, height 2000, style "background" "black" ]
+            [ width 1200, height 1200, style "background" "black" ]
             entities
         , div
             [ style "left" "20px"
